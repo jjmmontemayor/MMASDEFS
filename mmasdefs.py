@@ -21,7 +21,9 @@ from sklearn import svm
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import classification_report
 from ast import literal_eval
+from scipy.stats import pearsonr
 import matplotlib.pyplot as plt
+import data_source
 
 numpy.set_printoptions(threshold=numpy.nan)
 numpy.set_printoptions(precision=3)
@@ -32,7 +34,8 @@ class MMASDEFS :
     data_classes            = []
     data_classes_instances  = {}
     data_class              = 0
-    results                 = []          
+    results                 = []
+    best_result             = []         
    
     def __init__(self, iterations, alpha, beta, phi, max_pheromone, min_pheromone, q, f, cr) :
 
@@ -67,63 +70,55 @@ class MMASDEFS :
         
         self.de_running = 0
         
-        
-        
-    def formatData(self, data_type):
-        
-        #Load and process data
-        headers = ["sex", "length", "diameter", "height", "whole_weight", "shucked_weight", "viscera_weight", "shell_weight", "rings"]
-        f = pandas.read_csv('datasets/abalone/abalone.'+data_type+'.txt', sep=',', header=None, names=headers)
-        f.head()
-        
-        #trasform categorical data   
-        f["sex"] = f["sex"].astype('category')
-        f["sex"] = f["sex"].cat.codes
-         
-        data = f.values
-        
-        return data
 
     def loadData(self):
         
-        data = self.formatData('train')
-        
-        self.data_classes = data[:,8] #classes column
-        selector = [x for x in range(0,len(data[0])) if x != 8]
-        self.data_instances = data[:,selector] #the rest of the columns
-        
-        for c in numpy.unique(self.data_classes):
-            class_instance = data[numpy.where(data[:,8] == c)]
-            self.data_classes_instances[c] = class_instance[:,selector]         
-        
+        self.data_classes, self.data_instances, self.data_classes_instances = data_source.getShuttleData('train')
+        self.result_filename = 'shuttle_bmmasdefs.txt'
         self.FEATURE_COUNT = len(self.data_instances[0])
         self.ANT_COUNT = self.FEATURE_COUNT
         
-    def evaluateSolution(self, solution):
-        eval_data_instances  = self.data_instances[:, solution[0][0]]
-         
-        data = self.formatData('test')
-        test_data_classes = data[:,8] #classes column
-        test_data_instances = data[:,solution[0][0]] #the new features/data columns  
-                
-        #knn = KNeighborsClassifier()
-        #knn.fit(eval_data_instances,self.data_classes)
-        #test_data_pred_classes = knn.predict(test_data_instances[:, self.best_solution[0][0]])
+    def evaluateSolution(self, solution, is_best_solution):
         
-        clf = svm.LinearSVC(random_state=0)
-        clf.fit(eval_data_instances,self.data_classes)
-        test_data_pred_classes = clf.predict(test_data_instances)
+        test_data_classes,test_data_instances, test_data_classes_instances  = data_source.getShuttleData('test')
+        eval_data_instances  = self.data_instances[:, solution[0][0]]
+
+        knn = KNeighborsClassifier()
+        knn.fit(eval_data_instances,self.data_classes)
+        test_data_pred_classes = knn.predict(test_data_instances[:, solution[0][0]])
+        
+#        clf = svm.LinearSVC(random_state=0)
+#        clf.fit(eval_data_instances,self.data_classes)
+#        test_data_pred_classes = clf.predict(test_data_instances[:, solution[0][0]])
+        
         
         target_names = []
 
-        for c in list(a.data_classes_instances.keys()) :
+        for c in test_data_classes_instances.keys() :
             target_names.append('Class ' + str(int(c)))
         
+        
+
         report = classification_report(test_data_classes, test_data_pred_classes, target_names=target_names)
         
-        return self.addToResult(report, solution)
+        return self.addToResult(report, solution, is_best_solution)
 
-
+    def addToResult(self,cr, solution, is_best_solution):
+        
+        # Parse rows
+        tmp = []
+        
+        for row in cr.split("\n"):
+            parsed_row = [x for x in row.split("  ") if len(x) > 0]
+            if len(parsed_row) > 0:
+                tmp.append(parsed_row)
+        result = [solution[1], tmp[-1][1], tmp[-1][2], tmp[-1][3], solution[2], numpy.array_str(solution[0])]
+        self.results.append(result)
+        if(is_best_solution): self.best_result = result
+       
+    def generateReport(self) :
+        numpy.savetxt(self.result_filename, self.results, fmt='%5s', delimiter=',', newline='\n')
+        
     def initAnts(self):
         feature_set = random.sample(range(self.FEATURE_COUNT), self.FEATURE_COUNT)
 
@@ -172,56 +167,59 @@ class MMASDEFS :
 
         total_f_score = 0
         node_to_f_score = 0
-        print('computing heuristic value for sub-paths',node_from, state_from, node_to, state_to)
+        #print('computing heuristic value for sub-paths',node_from, state_from, node_to, state_to)
+
         for f in range(0, self.FEATURE_COUNT):
             f_score = self.getFScore(f)
             total_f_score += f_score
             if f == node_to :
                 node_to_f_score = f_score
 
+        #pearson = pearsonr(self.data_instances[:,node_from], self.data_instances[:,node_to])
+
+
         if (state_from == 0 and state_to == 0) or (state_from == 1 and state_to == 0) :
             return (state_from / self.FEATURE_COUNT) * total_f_score
+            #return pearson[0]
         elif (state_from == 0 and state_to == 1) or (state_from == 1 and state_to == 1) :
             return node_to_f_score
+            #return 1 - pearson[0]
 
     def getFScore(self, feature) :
         
-        print('computing mean for feature', feature)
+        n = d = 0
         
-        if feature == 0:
-            unique, occ = numpy.unique(a, return_counts=True)
-            mean_all_classes = occ / self.FEATURE_COUNT
-        else:
-            mean_all_classes = numpy.mean(self.data_instances, axis = 0)
+        feature_mean_all_classes = numpy.mean(a.data_instances[:,feature])
         
-        n = d = nps = 0
-
         for k in self.data_classes_instances.keys():
-            print('computing f-score for', k)
-            
-            mean_per_class = numpy.mean(self.data_classes_instances[k], axis = 0)
-            n += numpy.power((mean_per_class[feature] -  mean_all_classes[feature]),2)
-
-            #data has complete features per instance
-            feature_instance_in_k = len(self.data_classes_instances[k])
-
-            for l in self.data_classes_instances[k] :
-                nps += numpy.power((l[feature] - mean_per_class[feature]), 2)
-            
-            d += (1 / (feature_instance_in_k - 1 ) ) * nps
-
+            class_k_data = self.data_classes_instances[k]
+            #class_k_data_n_samples = len(class_k_data)
+            feature_k_in_class_k = class_k_data[:,feature]
+            feature_k_in_class_k_samples = len(feature_k_in_class_k)
+            feature_mean_in_class_k = numpy.mean(feature_k_in_class_k)
+            n += numpy.square(feature_mean_all_classes - feature_mean_in_class_k)
         
+            dd = 0
+            
+            for j in range(0,feature_k_in_class_k_samples):
+                dd += numpy.square(feature_k_in_class_k[j] - feature_mean_in_class_k)
+            
+            d += (1 / (feature_k_in_class_k_samples - 1)) * dd
+        
+        print('f-score', n, d, n/d)              
         return n/d
+
+    
     
     def getSolutionQuality(self, classes, new_instances) :
     
-        #knn = KNeighborsClassifier()
-        #knn.fit(new_instances, classes)
-        #return knn.score(new_instances,classes)
+        knn = KNeighborsClassifier()
+        knn.fit(new_instances, classes)
+        return knn.score(new_instances,classes)
     
-        clf = svm.LinearSVC(random_state=0)
-        clf.fit(new_instances,classes)
-        return clf.score(new_instances,classes)
+#        clf = svm.LinearSVC(random_state=0)
+#        clf.fit(new_instances,classes)
+#        return clf.score(new_instances,classes)
     
     def getIterationBestSolution(self, ant_steps) :
         score_vector = []
@@ -232,7 +230,7 @@ class MMASDEFS :
             new_features        = numpy.nonzero(ant_steps[a][1])
             new_data_instances  = self.data_instances[:, new_features[0]]
             score_quality       = self.getSolutionQuality(self.data_classes, new_data_instances)
-            
+            print("Getting iteration best solution: new features ", new_features," score quality ", score_quality)
             #selection
             if self.de_running == 1 and score_quality < self.ant_steps[a][2] :
                 pheromones = self.getPheromonePath(self.ant_steps[a])
@@ -245,8 +243,8 @@ class MMASDEFS :
             score_vector.append(score_quality)
             reduction_vector.append((self.FEATURE_COUNT - len(new_features[0])) / self.FEATURE_COUNT)
         
-        print(score_vector)
-        print(reduction_vector)
+        print('Getting iteration best solution: score vector', score_vector)
+        print('Getting iteration best solution: reduction vector', reduction_vector)
     
         ants_max_score_indices = numpy.where(score_vector == numpy.max(score_vector))
         #ants_max_reduction = numpy.take(reduction_vector, ants_max_score_indices[0])
@@ -309,7 +307,6 @@ class MMASDEFS :
         next_steps_scores_0 = dict.fromkeys(next_steps, 0)
         next_steps_scores_1 = dict.fromkeys(next_steps, 0)
         
-        
         for next_step in next_steps:
             next_steps_scores_0[next_step] = self.getNextStepProbability(current_position, current_position_state, next_step, 0, next_steps)
             next_steps_scores_1[next_step] = self.getNextStepProbability(current_position, current_position_state, next_step, 1, next_steps)
@@ -328,17 +325,20 @@ class MMASDEFS :
         return step
 
     def getNextStepProbabilityPheromoneHeuristicWeights(self, current_step, next_step, current_step_state, next_step_state):
-        
         if self.de_running == 1 :
             pheromone_value = self.de_pheromone_matrix[current_step,next_step][current_step_state, next_step_state]
         else:
             pheromone_value = self.pheromone_matrix[current_step,next_step][current_step_state, next_step_state]
-            
+        
+        #print('computing probability from pheromone and heuristic weights',current_step, current_step_state, next_step, next_step_state)
+        #print(pheromone_value,self.heuristic_matrix[current_step,next_step][current_step_state, next_step_state])
+  
         return numpy.power(pheromone_value, self.ALPHA) * numpy.power(self.heuristic_matrix[current_step,next_step][current_step_state, next_step_state], self.BETA)
 
     def getNextStepProbability(self, current_step, current_step_state, next_step, next_step_state, possible_steps):
 
         n = self.getNextStepProbabilityPheromoneHeuristicWeights(current_step, next_step, current_step_state, next_step_state)
+        
         step_0 = 0
         step_1 = 0 
 
@@ -462,10 +462,13 @@ class MMASDEFS :
             self.pheromone_matrix = self.de_pheromone_matrix
             self.addPheromone(local_best)
             
+            is_best_solution = 0
+            
             if (local_best[1] > self.best_solution[1]) or (not numpy.array_equal(local_best[0], self.best_solution[0]) and  local_best[1] == self.best_solution[1]) :
                 self.best_solution = local_best
+                is_best_solution = 1
             
-            self.evaluateSolution(local_best)
+            self.evaluateSolution(local_best, is_best_solution)
                 
             print('best solution', self.best_solution[0], self.best_solution[1], self.best_solution[2])
             
@@ -475,33 +478,31 @@ class MMASDEFS :
         
         self.generateReport()
         
-        
-    def addToResult(self,cr, solution):
-        
-        # Parse rows
-        tmp = []
-        
-        for row in cr.split("\n"):
-            parsed_row = [x for x in row.split("  ") if len(x) > 0]
-            if len(parsed_row) > 0:
-                tmp.append(parsed_row)
-        
-        #self.results.append([solution[1], tmp[4][1], tmp[4][2], tmp[4][3], solution[2], numpy.array_str(solution[0])])
-        self.results.append([solution[1], tmp[30][1], tmp[30][2], tmp[30][3], solution[2], numpy.array_str(solution[0])])
-               
-    def generateReport(self) :
-        numpy.savetxt('breast_bmmasdefs.txt', self.results, fmt='%5s', delimiter=',', newline='\n')
-        
-a = MMASDEFS(100, 1.0, 0.5, .049, 6.0, 0.1, 1.0, .9, 0.5)    
-a.run()    
-#
-#average = 0.0
-#test_run = 1
-#for i in range (0,test_run):
-#    print('########################### Evaluation ', i, '###########################')
-#    a = MMASDEFS(100, 1.0, 0.5, .049, 6.0, 0.1, 1.0, .9, 0.5)
-#    a.run()
-#    average += a.best_solution[1]
-#    print('global best solution ', a.best_solution)
-#print('average accuracy', average/test_run)
+    
+
+accuracy_results = []
+precision_results = []
+recall_results = []
+fr_results = []
+individual_run = 20
+iteration = 50
+for i in range (0,individual_run):
+    print('########################### Evaluation ', i, '###########################')
+    a = MMASDEFS(iteration, 1.0, 0.5, .049, 6.0, 0.1, 1.0, .9, 0.5)
+    a.run()
+    print('global best solution ', a.best_solution)
+    accuracy_results.append(a.best_result[0])
+    precision_results.append(a.best_result[1])
+    recall_results.append(a.best_result[2])
+    fr_results.append(a.best_result[3])
+
+accuracy_results = numpy.array(accuracy_results, dtype=float)
+precision_results = numpy.array(precision_results, dtype=float) 
+recall_results = numpy.array(recall_results, dtype=float)  
+fr_results = numpy.array(fr_results, dtype=float)  
+   
+print('average accuracy', numpy.mean(accuracy_results))
+print('average precision', numpy.mean(precision_results))
+print('average recall', numpy.mean(recall_results))
+print('average fr', numpy.mean(fr_results))
 
